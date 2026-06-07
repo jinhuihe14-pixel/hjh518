@@ -1,25 +1,26 @@
 import { useMemo, useState } from 'react';
 import ReactECharts from 'echarts-for-react';
 import { TrendingDown, AlertTriangle, DollarSign, Package } from 'lucide-react';
-import { mockLossRecords } from '@/data/mockData';
 import { Table, Tag, Select, DatePicker } from 'antd';
 import type { TableProps } from 'antd';
 import type { LossRecord } from '@/types';
 import dayjs from 'dayjs';
+import { useStore } from '@/store/useStore';
 
 const { Option } = Select;
 
 export default function Loss() {
   const [selectedReason, setSelectedReason] = useState<string>('all');
 
+  const lossRecords = useStore((s) => s.lossRecords);
+  const products = useStore((s) => s.products);
+
   const lossTrendOption = useMemo(() => {
     const monthlyLoss: Record<string, number> = {};
-    const reasonCounts: Record<string, number> = { expired: 0, damaged: 0, other: 0 };
 
-    mockLossRecords.forEach((record) => {
+    lossRecords.forEach((record) => {
       const month = dayjs(record.date).format('YYYY-MM');
       monthlyLoss[month] = (monthlyLoss[month] || 0) + record.totalCost;
-      reasonCounts[record.reason] = (reasonCounts[record.reason] || 0) + 1;
     });
 
     const months = Object.keys(monthlyLoss).sort();
@@ -68,16 +69,16 @@ export default function Loss() {
               ],
             },
           },
-          data: months.map((m) => monthlyLoss[m]),
+          data: months.map((m) => Math.round(monthlyLoss[m])),
         },
       ],
       animationDuration: 1000,
     };
-  }, []);
+  }, [lossRecords]);
 
   const lossReasonPieOption = useMemo(() => {
     const reasonStats: Record<string, number> = {};
-    mockLossRecords.forEach((r) => {
+    lossRecords.forEach((r) => {
       reasonStats[r.reason] = (reasonStats[r.reason] || 0) + r.totalCost;
     });
 
@@ -117,7 +118,7 @@ export default function Loss() {
             borderWidth: 2,
           },
           data: Object.keys(reasonStats).map((key) => ({
-            value: reasonStats[key],
+            value: Math.round(reasonStats[key]),
             name: reasonNames[key],
             itemStyle: { color: colors[key as keyof typeof colors] },
           })),
@@ -125,11 +126,11 @@ export default function Loss() {
       ],
       animationDuration: 1000,
     };
-  }, []);
+  }, [lossRecords]);
 
   const categoryLossOption = useMemo(() => {
     const categoryLoss: Record<string, number> = {};
-    mockLossRecords.forEach((r) => {
+    lossRecords.forEach((r) => {
       categoryLoss[r.category] = (categoryLoss[r.category] || 0) + r.totalCost;
     });
 
@@ -158,7 +159,7 @@ export default function Loss() {
       },
       xAxis: {
         type: 'category',
-        data: categories.map((c) => categoryNames[c]),
+        data: categories.map((c) => categoryNames[c] || c),
         axisLine: { lineStyle: { color: '#e5e7eb' } },
         axisLabel: { color: '#6b7280' },
       },
@@ -172,7 +173,7 @@ export default function Loss() {
         {
           type: 'bar',
           data: categories.map((c) => ({
-            value: categoryLoss[c],
+            value: Math.round(categoryLoss[c]),
             itemStyle: {
               color: {
                 type: 'linear',
@@ -190,12 +191,16 @@ export default function Loss() {
       ],
       animationDuration: 1000,
     };
-  }, []);
+  }, [lossRecords]);
 
   const filteredRecords = useMemo(() => {
-    if (selectedReason === 'all') return mockLossRecords;
-    return mockLossRecords.filter((r) => r.reason === selectedReason);
-  }, [selectedReason]);
+    if (selectedReason === 'all') return lossRecords;
+    return lossRecords.filter((r) => r.reason === selectedReason);
+  }, [selectedReason, lossRecords]);
+
+  const sortedRecords = useMemo(() => {
+    return [...filteredRecords].sort((a, b) => b.date.localeCompare(a.date));
+  }, [filteredRecords]);
 
   const columns: TableProps<LossRecord>['columns'] = [
     {
@@ -257,9 +262,9 @@ export default function Loss() {
     },
   ];
 
-  const totalLoss = mockLossRecords.reduce((sum, r) => sum + r.totalCost, 0);
-  const totalQuantity = mockLossRecords.reduce((sum, r) => sum + r.quantity, 0);
-  const expiredCount = mockLossRecords.filter((r) => r.reason === 'expired').length;
+  const totalLoss = lossRecords.reduce((sum, r) => sum + r.totalCost, 0);
+  const totalQuantity = lossRecords.reduce((sum, r) => sum + r.quantity, 0);
+  const expiredCount = lossRecords.filter((r) => r.reason === 'expired').length;
 
   const suggestions = [
     '零食区临期商品较多，建议缩短订货周期',
@@ -267,6 +272,11 @@ export default function Loss() {
     '速冻商品周转较慢，建议减少安全库存',
     '日化类保质期较长，可适当增加库存',
   ];
+
+  const monthCount = useMemo(() => {
+    const months = new Set(lossRecords.map((r) => dayjs(r.date).format('YYYY-MM')));
+    return Math.max(1, months.size);
+  }, [lossRecords]);
 
   return (
     <div className="space-y-6">
@@ -316,7 +326,7 @@ export default function Loss() {
             <div>
               <p className="text-sm text-gray-500">临期过期占比</p>
               <p className="text-2xl font-bold text-gray-800">
-                {((expiredCount / mockLossRecords.length) * 100).toFixed(0)}%
+                {lossRecords.length > 0 ? ((expiredCount / lossRecords.length) * 100).toFixed(0) : 0}%
               </p>
             </div>
           </div>
@@ -329,7 +339,7 @@ export default function Loss() {
             </div>
             <div>
               <p className="text-sm text-gray-500">月均损耗</p>
-              <p className="text-2xl font-bold text-gray-800">¥{(totalLoss / 6).toFixed(0)}</p>
+              <p className="text-2xl font-bold text-gray-800">¥{(totalLoss / monthCount).toFixed(0)}</p>
             </div>
           </div>
         </div>
@@ -386,7 +396,7 @@ export default function Loss() {
 
         <Table
           columns={columns}
-          dataSource={filteredRecords}
+          dataSource={sortedRecords}
           rowKey="id"
           pagination={{
             pageSize: 10,

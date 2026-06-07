@@ -28,6 +28,45 @@ export interface Product {
   turnoverDays: number;
 }
 
+export interface InventoryBatch {
+  id: string;
+  productId: string;
+  productName: string;
+  category: CategoryType;
+  categoryName: string;
+  quantity: number;
+  remaining: number;
+  unitCost: number;
+  produceDate: string;
+  expireDate: string;
+  inboundDate: string;
+}
+
+export interface SalesItem {
+  batchId: string;
+  productId: string;
+  productName: string;
+  category: CategoryType;
+  categoryName: string;
+  quantity: number;
+  unitPrice: number;
+  unitCost: number;
+  subtotal: number;
+  costTotal: number;
+  profit: number;
+}
+
+export interface SalesRecord {
+  id: string;
+  date: string;
+  hour: number;
+  items: SalesItem[];
+  totalAmount: number;
+  totalCost: number;
+  totalProfit: number;
+  itemCount: number;
+}
+
 export interface SalesData {
   date: string;
   totalAmount: number;
@@ -73,6 +112,7 @@ export interface LossRecord {
   productName: string;
   category: CategoryType;
   categoryName: string;
+  batchId?: string;
   quantity: number;
   unitCost: number;
   totalCost: number;

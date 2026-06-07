@@ -1,10 +1,17 @@
 import { useState, useMemo } from 'react';
-import { AlertTriangle, Clock, PackageX, Download, Filter } from 'lucide-react';
-import { mockInventoryAlerts } from '@/data/mockData';
-import { Table, Tag, Button, Select } from 'antd';
+import { AlertTriangle, Clock, PackageX, Download, Filter, Package } from 'lucide-react';
+import { Table, Tag, Button, Select, Tabs } from 'antd';
 import type { TableProps } from 'antd';
-import type { InventoryAlert } from '@/types';
+import type { InventoryAlert, InventoryBatch } from '@/types';
 import * as XLSX from 'xlsx';
+import {
+  useStore,
+  generateInventoryAlertsFromStore,
+  getProductStock,
+  getProductCost,
+  getProductExpireDate,
+  getTotalStockValue,
+} from '@/store/useStore';
 
 const { Option } = Select;
 
@@ -13,14 +20,24 @@ type AlertType = 'all' | 'expiring' | 'slow_moving' | 'out_of_stock';
 export default function Inventory() {
   const [alertType, setAlertType] = useState<AlertType>('all');
   const [alertLevel, setAlertLevel] = useState<string>('all');
+  const [activeTab, setActiveTab] = useState<string>('alerts');
+
+  const products = useStore((s) => s.products);
+  const batches = useStore((s) => s.batches);
+  const salesRecords = useStore((s) => s.salesRecords);
+
+  const inventoryAlerts = useMemo(
+    () => generateInventoryAlertsFromStore(products, batches, salesRecords),
+    [products, batches, salesRecords]
+  );
 
   const filteredAlerts = useMemo(() => {
-    return mockInventoryAlerts.filter((alert) => {
+    return inventoryAlerts.filter((alert) => {
       if (alertType !== 'all' && alert.type !== alertType) return false;
       if (alertLevel !== 'all' && alert.level !== alertLevel) return false;
       return true;
     });
-  }, [alertType, alertLevel]);
+  }, [inventoryAlerts, alertType, alertLevel]);
 
   const typeLabels: Record<string, string> = {
     expiring: '临期商品',
@@ -28,7 +45,7 @@ export default function Inventory() {
     out_of_stock: '缺货预警',
   };
 
-  const columns: TableProps<InventoryAlert>['columns'] = [
+  const alertColumns: TableProps<InventoryAlert>['columns'] = [
     {
       title: '商品编号',
       dataIndex: 'productId',
@@ -102,22 +119,125 @@ export default function Inventory() {
       width: 120,
       render: (value) => <span className="font-medium">¥{value.toFixed(2)}</span>,
     },
+  ];
+
+  const batchColumns: TableProps<InventoryBatch>['columns'] = [
     {
-      title: '操作',
-      key: 'action',
-      width: 150,
-      render: () => (
-        <div className="flex gap-2">
-          <Button type="link" size="small" className="text-primary-600">
-            处理
-          </Button>
-          <Button type="link" size="small">
-            详情
-          </Button>
-        </div>
+      title: '批次编号',
+      dataIndex: 'id',
+      key: 'id',
+      width: 100,
+    },
+    {
+      title: '商品名称',
+      dataIndex: 'productName',
+      key: 'productName',
+      render: (text) => <span className="font-medium text-gray-800">{text}</span>,
+    },
+    {
+      title: '品类',
+      dataIndex: 'categoryName',
+      key: 'categoryName',
+      width: 80,
+    },
+    {
+      title: '入库数量',
+      dataIndex: 'quantity',
+      key: 'quantity',
+      width: 100,
+      render: (v) => `${v}件`,
+    },
+    {
+      title: '剩余库存',
+      dataIndex: 'remaining',
+      key: 'remaining',
+      width: 100,
+      render: (v, record) => {
+        const ratio = record.quantity > 0 ? (v / record.quantity) * 100 : 0;
+        return (
+          <div className="flex items-center gap-2">
+            <span className={v === 0 ? 'text-gray-400' : 'text-gray-800 font-medium'}>{v}件</span>
+            <span className="text-xs text-gray-400">({ratio.toFixed(0)}%)</span>
+          </div>
+        );
+      },
+    },
+    {
+      title: '进价',
+      dataIndex: 'unitCost',
+      key: 'unitCost',
+      width: 90,
+      render: (v) => `¥${v.toFixed(2)}`,
+    },
+    {
+      title: '库存价值',
+      key: 'stockValue',
+      width: 110,
+      render: (_, record) => (
+        <span className="font-medium">¥{(record.remaining * record.unitCost).toFixed(2)}</span>
       ),
     },
+    {
+      title: '生产日期',
+      dataIndex: 'produceDate',
+      key: 'produceDate',
+      width: 110,
+    },
+    {
+      title: '到期日期',
+      dataIndex: 'expireDate',
+      key: 'expireDate',
+      width: 110,
+      render: (date) => {
+        const daysLeft = Math.ceil((new Date(date).getTime() - Date.now()) / (1000 * 60 * 60 * 24));
+        return (
+          <div>
+            <p>{date}</p>
+            <p className={`text-xs ${daysLeft <= 7 ? 'text-red-500' : daysLeft <= 30 ? 'text-yellow-500' : 'text-gray-400'}`}>
+              {daysLeft > 0 ? `${daysLeft}天后到期` : '已过期'}
+            </p>
+          </div>
+        );
+      },
+    },
+    {
+      title: '入库日期',
+      dataIndex: 'inboundDate',
+      key: 'inboundDate',
+      width: 110,
+    },
   ];
+
+  const sortedBatches = useMemo(() => {
+    return [...batches].sort((a, b) => b.inboundDate.localeCompare(a.inboundDate));
+  }, [batches]);
+
+  const stats = useMemo(() => {
+    const expiring = inventoryAlerts.filter((a) => a.type === 'expiring');
+    const slowMoving = inventoryAlerts.filter((a) => a.type === 'slow_moving');
+    const outOfStock = inventoryAlerts.filter((a) => a.type === 'out_of_stock');
+
+    return {
+      expiring: {
+        count: new Set(expiring.map((e) => e.productId)).size,
+        value: expiring.reduce((sum, a) => sum + a.stockValue, 0),
+      },
+      slowMoving: {
+        count: new Set(slowMoving.map((e) => e.productId)).size,
+        value: slowMoving.reduce((sum, a) => sum + a.stockValue, 0),
+      },
+      outOfStock: {
+        count: new Set(outOfStock.map((e) => e.productId)).size,
+        value: outOfStock.reduce((sum, a) => sum + a.stockValue, 0),
+      },
+    };
+  }, [inventoryAlerts]);
+
+  const totalStockValue = useMemo(() => getTotalStockValue(batches), [batches]);
+  const totalStockQty = useMemo(
+    () => batches.reduce((sum, b) => sum + b.remaining, 0),
+    [batches]
+  );
 
   const handleExport = () => {
     const exportData = filteredAlerts.map((alert) => ({
@@ -125,7 +245,7 @@ export default function Inventory() {
       商品名称: alert.productName,
       品类: alert.categoryName,
       预警类型: typeLabels[alert.type],
-      详情: alert.type === 'expiring' ? `${alert.daysLeft}天后到期` : 
+      详情: alert.type === 'expiring' ? `${alert.daysLeft}天后到期` :
             alert.type === 'slow_moving' ? '周转缓慢' : '库存不足',
       当前库存: alert.stock,
       库存价值: alert.stockValue.toFixed(2),
@@ -137,26 +257,26 @@ export default function Inventory() {
     XLSX.writeFile(wb, '库存预警列表.xlsx');
   };
 
-  const stats = useMemo(() => {
-    const expiring = mockInventoryAlerts.filter((a) => a.type === 'expiring');
-    const slowMoving = mockInventoryAlerts.filter((a) => a.type === 'slow_moving');
-    const outOfStock = mockInventoryAlerts.filter((a) => a.type === 'out_of_stock');
-
-    return {
-      expiring: {
-        count: expiring.length,
-        value: expiring.reduce((sum, a) => sum + a.stockValue, 0),
-      },
-      slowMoving: {
-        count: slowMoving.length,
-        value: slowMoving.reduce((sum, a) => sum + a.stockValue, 0),
-      },
-      outOfStock: {
-        count: outOfStock.length,
-        value: outOfStock.reduce((sum, a) => sum + a.stockValue, 0),
-      },
-    };
-  }, []);
+  const tabItems = [
+    {
+      key: 'alerts',
+      label: (
+        <span className="flex items-center gap-2">
+          <AlertTriangle size={16} />
+          预警清单
+        </span>
+      ),
+    },
+    {
+      key: 'batches',
+      label: (
+        <span className="flex items-center gap-2">
+          <Package size={16} />
+          批次管理
+        </span>
+      ),
+    },
+  ];
 
   return (
     <div className="space-y-6">
@@ -217,47 +337,88 @@ export default function Inventory() {
       </div>
 
       <div className="stat-card">
-        <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
-          <h3 className="font-semibold text-gray-800">预警列表</h3>
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2">
-              <Filter size={16} className="text-gray-400" />
-              <Select
-                value={alertType}
-                onChange={(v) => setAlertType(v)}
-                style={{ width: 130 }}
-                size="middle"
-              >
-                <Option value="all">全部类型</Option>
-                <Option value="expiring">临期商品</Option>
-                <Option value="slow_moving">滞销商品</Option>
-                <Option value="out_of_stock">缺货预警</Option>
-              </Select>
-            </div>
-            <Select
-              value={alertLevel}
-              onChange={(v) => setAlertLevel(v)}
-              style={{ width: 120 }}
-              size="middle"
-            >
-              <Option value="all">全部级别</Option>
-              <Option value="warning">警告</Option>
-              <Option value="danger">危险</Option>
-            </Select>
-          </div>
-        </div>
-
-        <Table
-          columns={columns}
-          dataSource={filteredAlerts}
-          rowKey="productId"
-          pagination={{
-            pageSize: 10,
-            showSizeChanger: true,
-            showTotal: (total) => `共 ${total} 条记录`,
-          }}
-          scroll={{ x: 800 }}
+        <Tabs
+          activeKey={activeTab}
+          onChange={setActiveTab}
+          items={tabItems}
+          className="mb-0"
         />
+
+        {activeTab === 'alerts' && (
+          <>
+            <div className="flex flex-wrap items-center justify-between gap-4 mb-4">
+              <div className="flex items-center gap-3">
+                <div className="flex items-center gap-2">
+                  <Filter size={16} className="text-gray-400" />
+                  <Select
+                    value={alertType}
+                    onChange={(v) => setAlertType(v)}
+                    style={{ width: 130 }}
+                    size="middle"
+                  >
+                    <Option value="all">全部类型</Option>
+                    <Option value="expiring">临期商品</Option>
+                    <Option value="slow_moving">滞销商品</Option>
+                    <Option value="out_of_stock">缺货预警</Option>
+                  </Select>
+                </div>
+                <Select
+                  value={alertLevel}
+                  onChange={(v) => setAlertLevel(v)}
+                  style={{ width: 120 }}
+                  size="middle"
+                >
+                  <Option value="all">全部级别</Option>
+                  <Option value="warning">警告</Option>
+                  <Option value="danger">危险</Option>
+                </Select>
+              </div>
+            </div>
+
+            <Table
+              columns={alertColumns}
+              dataSource={filteredAlerts}
+              rowKey={(record) => `${record.productId}-${record.type}`}
+              pagination={{
+                pageSize: 10,
+                showSizeChanger: true,
+                showTotal: (total) => `共 ${total} 条记录`,
+              }}
+              scroll={{ x: 800 }}
+            />
+          </>
+        )}
+
+        {activeTab === 'batches' && (
+          <>
+            <div className="mb-4 p-3 bg-gray-50 rounded-lg flex items-center gap-6">
+              <div>
+                <span className="text-sm text-gray-500">总库存数量：</span>
+                <span className="font-semibold text-gray-800">{totalStockQty} 件</span>
+              </div>
+              <div>
+                <span className="text-sm text-gray-500">总库存价值：</span>
+                <span className="font-semibold text-primary-600">¥{totalStockValue.toFixed(2)}</span>
+              </div>
+              <div>
+                <span className="text-sm text-gray-500">批次总数：</span>
+                <span className="font-semibold text-gray-800">{batches.length} 个</span>
+              </div>
+            </div>
+
+            <Table
+              columns={batchColumns}
+              dataSource={sortedBatches}
+              rowKey="id"
+              pagination={{
+                pageSize: 10,
+                showSizeChanger: true,
+                showTotal: (total) => `共 ${total} 条记录`,
+              }}
+              scroll={{ x: 1000 }}
+            />
+          </>
+        )}
       </div>
     </div>
   );

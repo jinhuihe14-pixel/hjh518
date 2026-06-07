@@ -8,17 +8,42 @@ import {
 } from 'lucide-react';
 import KpiCard from '@/components/KpiCard';
 import {
-  mockKpiData,
-  mockSalesData,
-  mockInventoryAlerts,
-  mockHourlySales,
-} from '@/data/mockData';
+  useStore,
+  generateKpiDataFromStore,
+  generateSalesDataFromStore,
+  generateInventoryAlertsFromStore,
+  generateHourlySalesFromStore,
+} from '@/store/useStore';
 import { CategoryColors, CategoryNames } from '@/types';
 import dayjs from 'dayjs';
 
 export default function Dashboard() {
+  const batches = useStore((s) => s.batches);
+  const salesRecords = useStore((s) => s.salesRecords);
+  const products = useStore((s) => s.products);
+
+  const kpiData = useMemo(
+    () => generateKpiDataFromStore(batches, salesRecords),
+    [batches, salesRecords]
+  );
+
+  const salesData = useMemo(
+    () => generateSalesDataFromStore(salesRecords, 30),
+    [salesRecords]
+  );
+
+  const inventoryAlerts = useMemo(
+    () => generateInventoryAlertsFromStore(products, batches, salesRecords),
+    [products, batches, salesRecords]
+  );
+
+  const hourlySales = useMemo(
+    () => generateHourlySalesFromStore(salesRecords),
+    [salesRecords]
+  );
+
   const salesTrendOption = useMemo(() => {
-    const last7Days = mockSalesData.slice(-7);
+    const last7Days = salesData.slice(-7);
     return {
       tooltip: {
         trigger: 'axis',
@@ -112,10 +137,11 @@ export default function Dashboard() {
       ],
       animationDuration: 1000,
     };
-  }, []);
+  }, [salesData]);
 
   const categoryPieOption = useMemo(() => {
-    const latestData = mockSalesData[mockSalesData.length - 1];
+    const latestData = salesData[salesData.length - 1];
+    if (!latestData) return { tooltip: {} };
     return {
       tooltip: {
         trigger: 'item',
@@ -165,7 +191,7 @@ export default function Dashboard() {
       ],
       animationDuration: 1000,
     };
-  }, []);
+  }, [salesData]);
 
   const hourlySalesOption = useMemo(() => {
     return {
@@ -184,7 +210,7 @@ export default function Dashboard() {
       },
       xAxis: {
         type: 'category',
-        data: mockHourlySales.map((d) => `${d.hour}:00`),
+        data: hourlySales.map((d) => `${d.hour}:00`),
         axisLine: { lineStyle: { color: '#e5e7eb' } },
         axisLabel: { color: '#6b7280', fontSize: 11 },
       },
@@ -197,7 +223,7 @@ export default function Dashboard() {
       series: [
         {
           type: 'bar',
-          data: mockHourlySales.map((d) => d.sales),
+          data: hourlySales.map((d) => d.sales),
           itemStyle: {
             color: {
               type: 'linear',
@@ -217,9 +243,9 @@ export default function Dashboard() {
       ],
       animationDuration: 800,
     };
-  }, []);
+  }, [hourlySales]);
 
-  const expiringAlerts = mockInventoryAlerts
+  const expiringAlerts = inventoryAlerts
     .filter((a) => a.type === 'expiring')
     .slice(0, 5);
 
@@ -233,33 +259,33 @@ export default function Dashboard() {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
         <KpiCard
           title="今日销售额"
-          value={mockKpiData.todaySales}
+          value={kpiData.todaySales}
           icon={DollarSign}
-          growth={mockKpiData.salesGrowth}
+          growth={kpiData.salesGrowth}
           prefix="¥"
           color="orange"
         />
         <KpiCard
           title="今日订单数"
-          value={mockKpiData.todayOrders}
+          value={kpiData.todayOrders}
           icon={ShoppingCart}
-          growth={mockKpiData.orderGrowth}
+          growth={kpiData.orderGrowth}
           suffix="单"
           color="teal"
         />
         <KpiCard
           title="库存总量"
-          value={mockKpiData.totalStock}
+          value={kpiData.totalStock}
           icon={Package}
-          growth={mockKpiData.stockGrowth}
+          growth={kpiData.stockGrowth}
           suffix="件"
           color="blue"
         />
         <KpiCard
           title="临期预警"
-          value={mockKpiData.expiringCount}
+          value={kpiData.expiringCount}
           icon={AlertTriangle}
-          growth={mockKpiData.expiringGrowth}
+          growth={kpiData.expiringGrowth}
           suffix="个"
           color="purple"
         />
@@ -310,42 +336,49 @@ export default function Dashboard() {
             </button>
           </div>
           <div className="space-y-3">
-            {expiringAlerts.map((alert) => (
-              <div
-                key={alert.productId}
-                className="flex items-center justify-between p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors"
-              >
-                <div className="flex items-center gap-3">
-                  <div
-                    className={`w-2 h-10 rounded-full ${
-                      alert.level === 'danger'
-                        ? 'bg-red-500'
-                        : 'bg-yellow-500'
-                    }`}
-                  />
-                  <div>
-                    <p className="font-medium text-gray-800 text-sm">
-                      {alert.productName}
+            {expiringAlerts.length > 0 ? (
+              expiringAlerts.map((alert) => (
+                <div
+                  key={alert.productId}
+                  className="flex items-center justify-between p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors"
+                >
+                  <div className="flex items-center gap-3">
+                    <div
+                      className={`w-2 h-10 rounded-full ${
+                        alert.level === 'danger'
+                          ? 'bg-red-500'
+                          : 'bg-yellow-500'
+                      }`}
+                    />
+                    <div>
+                      <p className="font-medium text-gray-800 text-sm">
+                        {alert.productName}
+                      </p>
+                      <p className="text-xs text-gray-500">
+                        {alert.categoryName} · 库存 {alert.stock}件
+                      </p>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <p
+                      className={`text-sm font-medium ${
+                        alert.level === 'danger' ? 'text-red-600' : 'text-yellow-600'
+                      }`}
+                    >
+                      {alert.daysLeft}天后到期
                     </p>
                     <p className="text-xs text-gray-500">
-                      {alert.categoryName} · 库存 {alert.stock}件
+                      ¥{alert.stockValue.toFixed(2)}
                     </p>
                   </div>
                 </div>
-                <div className="text-right">
-                  <p
-                    className={`text-sm font-medium ${
-                      alert.level === 'danger' ? 'text-red-600' : 'text-yellow-600'
-                    }`}
-                  >
-                    {alert.daysLeft}天后到期
-                  </p>
-                  <p className="text-xs text-gray-500">
-                    ¥{alert.stockValue.toFixed(2)}
-                  </p>
-                </div>
+              ))
+            ) : (
+              <div className="py-8 text-center text-gray-400">
+                <AlertTriangle className="w-10 h-10 mx-auto mb-2 opacity-30" />
+                <p className="text-sm">暂无临期预警</p>
               </div>
-            ))}
+            )}
           </div>
         </div>
       </div>

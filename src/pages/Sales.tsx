@@ -1,34 +1,48 @@
 import { useMemo, useState } from 'react';
 import ReactECharts from 'echarts-for-react';
 import { TrendingUp, DollarSign, Percent, Calendar } from 'lucide-react';
-import { mockSalesData, mockProductAnalysis } from '@/data/mockData';
-import { CategoryColors } from '@/types';
 import { Table, Select, DatePicker } from 'antd';
 import type { TableProps } from 'antd';
 import type { ProductAnalysis } from '@/types';
+import { CategoryColors, CategoryNames, CategoryType } from '@/types';
 import dayjs from 'dayjs';
+import {
+  useStore,
+  generateSalesDataFromStore,
+  generateProductAnalysisFromStore,
+} from '@/store/useStore';
 
 const { Option } = Select;
 
 export default function Sales() {
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
 
+  const products = useStore((s) => s.products);
+  const batches = useStore((s) => s.batches);
+  const salesRecords = useStore((s) => s.salesRecords);
+
+  const salesData = useMemo(
+    () => generateSalesDataFromStore(salesRecords, 30),
+    [salesRecords]
+  );
+
+  const productAnalysis = useMemo(
+    () => generateProductAnalysisFromStore(products, batches, salesRecords),
+    [products, batches, salesRecords]
+  );
+
   const categoryStats = useMemo(() => {
-    const last30Days = mockSalesData.slice(-30);
+    const last30Days = salesData.slice(-30);
     const categoryTotals: Record<string, number> = {};
-    const categoryOrders: Record<string, number> = {};
 
     last30Days.forEach((day) => {
       day.categoryBreakdown.forEach((cat) => {
         categoryTotals[cat.category] = (categoryTotals[cat.category] || 0) + cat.amount;
       });
-      Object.keys(categoryTotals).forEach((cat) => {
-        categoryOrders[cat] = (categoryOrders[cat] || 0) + Math.floor(day.orderCount * 0.25);
-      });
     });
 
     return categoryTotals;
-  }, []);
+  }, [salesData]);
 
   const categoryBarOption = useMemo(() => {
     const categories = Object.keys(categoryStats);
@@ -49,7 +63,7 @@ export default function Sales() {
       },
       xAxis: {
         type: 'category',
-        data: categories.map((c) => c),
+        data: categories.map((c) => CategoryNames[c as CategoryType] || c),
         axisLine: { lineStyle: { color: '#e5e7eb' } },
         axisLabel: { color: '#6b7280' },
       },
@@ -77,7 +91,7 @@ export default function Sales() {
   }, [categoryStats]);
 
   const marginAnalysisOption = useMemo(() => {
-    const topProducts = [...mockProductAnalysis]
+    const topProducts = [...productAnalysis]
       .sort((a, b) => b.marginRate - a.marginRate)
       .slice(0, 10);
 
@@ -126,20 +140,24 @@ export default function Sales() {
       ],
       animationDuration: 1000,
     };
-  }, []);
+  }, [productAnalysis]);
 
   const weekdayWeekendOption = useMemo(() => {
-    const weekdaySales = mockSalesData.filter((d) => {
+    const weekdaySales = salesData.filter((d) => {
       const day = dayjs(d.date).day();
       return day >= 1 && day <= 5;
     });
-    const weekendSales = mockSalesData.filter((d) => {
+    const weekendSales = salesData.filter((d) => {
       const day = dayjs(d.date).day();
       return day === 0 || day === 6;
     });
 
-    const weekdayAvg = weekdaySales.reduce((sum, d) => sum + d.totalAmount, 0) / weekdaySales.length;
-    const weekendAvg = weekendSales.reduce((sum, d) => sum + d.totalAmount, 0) / weekendSales.length;
+    const weekdayAvg = weekdaySales.length > 0
+      ? weekdaySales.reduce((sum, d) => sum + d.totalAmount, 0) / weekdaySales.length
+      : 0;
+    const weekendAvg = weekendSales.length > 0
+      ? weekendSales.reduce((sum, d) => sum + d.totalAmount, 0) / weekendSales.length
+      : 0;
 
     return {
       tooltip: {
@@ -177,11 +195,11 @@ export default function Sales() {
           type: 'bar',
           data: [
             {
-              value: weekdayAvg,
+              value: Math.round(weekdayAvg),
               itemStyle: { color: '#1A5D6B', borderRadius: [8, 8, 0, 0] },
             },
             {
-              value: weekendAvg,
+              value: Math.round(weekendAvg),
               itemStyle: { color: '#FF7A45', borderRadius: [8, 8, 0, 0] },
             },
           ],
@@ -197,12 +215,12 @@ export default function Sales() {
       ],
       animationDuration: 1000,
     };
-  }, []);
+  }, [salesData]);
 
   const filteredProducts = useMemo(() => {
-    if (selectedCategory === 'all') return mockProductAnalysis;
-    return mockProductAnalysis.filter((p) => p.category === selectedCategory);
-  }, [selectedCategory]);
+    if (selectedCategory === 'all') return productAnalysis;
+    return productAnalysis.filter((p) => p.category === selectedCategory);
+  }, [selectedCategory, productAnalysis]);
 
   const columns: TableProps<ProductAnalysis>['columns'] = [
     {
@@ -269,9 +287,11 @@ export default function Sales() {
     },
   ];
 
-  const totalRevenue = mockSalesData.slice(-30).reduce((sum, d) => sum + d.totalAmount, 0);
-  const totalOrders = mockSalesData.slice(-30).reduce((sum, d) => sum + d.orderCount, 0);
-  const avgMargin = mockProductAnalysis.reduce((sum, p) => sum + p.marginRate, 0) / mockProductAnalysis.length;
+  const totalRevenue = salesData.slice(-30).reduce((sum, d) => sum + d.totalAmount, 0);
+  const totalOrders = salesData.slice(-30).reduce((sum, d) => sum + d.orderCount, 0);
+  const avgMargin = productAnalysis.length > 0
+    ? productAnalysis.reduce((sum, p) => sum + p.marginRate, 0) / productAnalysis.length
+    : 0;
 
   return (
     <div className="space-y-6">

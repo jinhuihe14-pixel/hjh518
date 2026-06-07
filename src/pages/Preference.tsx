@@ -1,11 +1,27 @@
 import { useMemo } from 'react';
 import ReactECharts from 'echarts-for-react';
 import { Users, ShoppingBag, Lightbulb, TrendingUp } from 'lucide-react';
-import { mockSalesData, mockHourlySales, mockDisplaySuggestions } from '@/data/mockData';
-import { CategoryColors } from '@/types';
+import {
+  useStore,
+  generateSalesDataFromStore,
+  generateHourlySalesFromStore,
+} from '@/store/useStore';
+import { CategoryColors, CategoryNames, CategoryType } from '@/types';
 import dayjs from 'dayjs';
 
 export default function Preference() {
+  const salesRecords = useStore((s) => s.salesRecords);
+
+  const salesData = useMemo(
+    () => generateSalesDataFromStore(salesRecords, 30),
+    [salesRecords]
+  );
+
+  const hourlySales = useMemo(
+    () => generateHourlySalesFromStore(salesRecords),
+    [salesRecords]
+  );
+
   const timeDistributionOption = useMemo(() => {
     return {
       tooltip: {
@@ -27,7 +43,7 @@ export default function Preference() {
       },
       xAxis: {
         type: 'category',
-        data: mockHourlySales.map((d) => `${d.hour}:00`),
+        data: hourlySales.map((d) => `${d.hour}:00`),
         axisLine: { lineStyle: { color: '#e5e7eb' } },
         axisLabel: { color: '#6b7280', fontSize: 11 },
       },
@@ -51,7 +67,7 @@ export default function Preference() {
         {
           name: '销售额',
           type: 'bar',
-          data: mockHourlySales.map((d) => d.sales),
+          data: hourlySales.map((d) => d.sales),
           itemStyle: {
             color: {
               type: 'linear',
@@ -74,27 +90,26 @@ export default function Preference() {
           symbolSize: 6,
           lineStyle: { color: '#1A5D6B', width: 2 },
           itemStyle: { color: '#1A5D6B' },
-          data: mockHourlySales.map((d) => d.orders),
+          data: hourlySales.map((d) => d.orders),
         },
       ],
       animationDuration: 1000,
     };
-  }, []);
+  }, [hourlySales]);
 
   const categoryPreferenceOption = useMemo(() => {
-    const last30Days = mockSalesData.slice(-30);
+    const last30Days = salesData.slice(-30);
     const categorySales: Record<string, number> = {};
-    const categoryWeekendPreference: Record<string, number> = {};
 
     last30Days.forEach((day) => {
-      const isWeekend = dayjs(day.date).day() === 0 || dayjs(day.date).day() === 6;
       day.categoryBreakdown.forEach((cat) => {
         categorySales[cat.category] = (categorySales[cat.category] || 0) + cat.amount;
-        if (isWeekend) {
-          categoryWeekendPreference[cat.category] = (categoryWeekendPreference[cat.category] || 0) + cat.amount;
-        }
       });
     });
+
+    const categories: CategoryType[] = ['snack', 'daily', 'frozen', 'drink'];
+    const values = categories.map((c) => categorySales[c] || 0);
+    const maxValue = Math.max(...values, 1);
 
     return {
       tooltip: {
@@ -104,12 +119,10 @@ export default function Preference() {
         textStyle: { color: '#374151' },
       },
       radar: {
-        indicator: [
-          { name: '零食', max: 150000 },
-          { name: '日化', max: 150000 },
-          { name: '速冻', max: 150000 },
-          { name: '酒水', max: 150000 },
-        ],
+        indicator: categories.map((c) => ({
+          name: CategoryNames[c],
+          max: maxValue * 1.2,
+        })),
         shape: 'polygon',
         splitNumber: 4,
         axisName: { color: '#6b7280' },
@@ -121,7 +134,7 @@ export default function Preference() {
           type: 'radar',
           data: [
             {
-              value: Object.values(categorySales),
+              value: values,
               name: '月度销售额',
               areaStyle: { color: 'rgba(255, 122, 69, 0.3)' },
               lineStyle: { color: '#FF7A45', width: 2 },
@@ -132,10 +145,10 @@ export default function Preference() {
       ],
       animationDuration: 1000,
     };
-  }, []);
+  }, [salesData]);
 
   const weekendWeekdayOption = useMemo(() => {
-    const last30Days = mockSalesData.slice(-30);
+    const last30Days = salesData.slice(-30);
     const weekdayData: Record<string, number> = { snack: 0, daily: 0, frozen: 0, drink: 0 };
     const weekendData: Record<string, number> = { snack: 0, daily: 0, frozen: 0, drink: 0 };
 
@@ -187,21 +200,21 @@ export default function Preference() {
         {
           name: '工作日',
           type: 'bar',
-          data: categories.map((c) => weekdayData[c]),
+          data: categories.map((c) => Math.round(weekendData[c] ? weekdayData[c] : 0)),
           itemStyle: { color: '#1A5D6B', borderRadius: [4, 4, 0, 0] },
           barWidth: '30%',
         },
         {
           name: '周末',
           type: 'bar',
-          data: categories.map((c) => weekendData[c]),
+          data: categories.map((c) => Math.round(weekdayData[c] ? weekendData[c] : 0)),
           itemStyle: { color: '#FF7A45', borderRadius: [4, 4, 0, 0] },
           barWidth: '30%',
         },
       ],
       animationDuration: 1000,
     };
-  }, []);
+  }, [salesData]);
 
   const customerInsights = [
     {
@@ -222,6 +235,39 @@ export default function Preference() {
         '日化：周末销量占比40%',
         '速冻：工作日晚餐前采购较多',
         '酒水：周五、周六晚高峰',
+      ],
+    },
+  ];
+
+  const displaySuggestions = [
+    {
+      position: '收银台旁',
+      products: [
+        { id: 'P0001', name: '绿箭口香糖', reason: '高转化率冲动消费' },
+        { id: 'P0002', name: '士力架巧克力', reason: '排队时高曝光' },
+        { id: 'P0003', name: '农夫山泉', reason: '高频购买商品' },
+      ],
+    },
+    {
+      position: '入口黄金区',
+      products: [
+        { id: 'P0010', name: '乐事薯片促销装', reason: '引流爆款' },
+        { id: 'P0011', name: '伊利纯牛奶', reason: '民生刚需品' },
+        { id: 'P0012', name: '三只松鼠坚果', reason: '高毛利促销品' },
+      ],
+    },
+    {
+      position: '零食区端头',
+      products: [
+        { id: 'P0020', name: '旺旺大礼包', reason: '节日主题陈列' },
+        { id: 'P0021', name: '奥利奥夹心饼干', reason: '品牌效应强' },
+      ],
+    },
+    {
+      position: '冻品冷柜端头',
+      products: [
+        { id: 'P0030', name: '思念水饺组合装', reason: '家庭采购重点' },
+        { id: 'P0031', name: '安井火锅丸子', reason: '季节性热销' },
       ],
     },
   ];
@@ -283,7 +329,7 @@ export default function Preference() {
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {mockDisplaySuggestions.map((suggestion, index) => (
+          {displaySuggestions.map((suggestion, index) => (
             <div
               key={index}
               className="p-4 bg-gradient-to-br from-primary-50 to-orange-50 rounded-xl border border-primary-100"
