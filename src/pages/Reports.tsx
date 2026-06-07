@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import {
   Download,
   FileSpreadsheet,
@@ -7,8 +7,9 @@ import {
   Package,
   TrendingUp,
   CheckCircle,
+  Eye,
 } from 'lucide-react';
-import { Button, DatePicker, Select, Card, Progress, message } from 'antd';
+import { Button, DatePicker, Select, Card, Progress, message, Modal, Table, Tabs, Empty } from 'antd';
 import * as XLSX from 'xlsx';
 import {
   mockSalesData,
@@ -18,11 +19,295 @@ import {
   mockProductAnalysis,
 } from '@/data/mockData';
 import dayjs from 'dayjs';
+import type { ColumnsType } from 'antd/es/table';
 
 const { Option } = Select;
 const { RangePicker } = DatePicker;
 
 type ReportType = 'sales' | 'inventory' | 'loss' | 'analysis';
+type GranularityType = 'daily' | 'weekly' | 'monthly';
+
+interface ReportSheet {
+  name: string;
+  columns: ColumnsType<Record<string, any>>;
+  data: Record<string, any>[];
+}
+
+const getWeekKey = (dateStr: string): string => {
+  const d = dayjs(dateStr);
+  const startOfWeek = d.startOf('week');
+  const endOfWeek = d.endOf('week');
+  return `${startOfWeek.format('YYYY-MM-DD')} ~ ${endOfWeek.format('YYYY-MM-DD')}`;
+};
+
+const getMonthKey = (dateStr: string): string => {
+  return dayjs(dateStr).format('YYYY年MM月');
+};
+
+const aggregateSalesByGranularity = (
+  data: typeof mockSalesData,
+  granularity: GranularityType
+): Record<string, any>[] => {
+  if (granularity === 'daily') {
+    return data.map((d) => ({
+      date: d.date,
+      totalAmount: d.totalAmount,
+      orderCount: d.orderCount,
+      snackAmount: d.categoryBreakdown.find((c) => c.category === 'snack')?.amount || 0,
+      dailyAmount: d.categoryBreakdown.find((c) => c.category === 'daily')?.amount || 0,
+      frozenAmount: d.categoryBreakdown.find((c) => c.category === 'frozen')?.amount || 0,
+      drinkAmount: d.categoryBreakdown.find((c) => c.category === 'drink')?.amount || 0,
+    }));
+  }
+
+  const getKey = granularity === 'weekly' ? getWeekKey : getMonthKey;
+  const groups = new Map<string, {
+    totalAmount: number;
+    orderCount: number;
+    snackAmount: number;
+    dailyAmount: number;
+    frozenAmount: number;
+    drinkAmount: number;
+  }>();
+
+  data.forEach((d) => {
+    const key = getKey(d.date);
+    const existing = groups.get(key) || {
+      totalAmount: 0,
+      orderCount: 0,
+      snackAmount: 0,
+      dailyAmount: 0,
+      frozenAmount: 0,
+      drinkAmount: 0,
+    };
+    existing.totalAmount += d.totalAmount;
+    existing.orderCount += d.orderCount;
+    existing.snackAmount += d.categoryBreakdown.find((c) => c.category === 'snack')?.amount || 0;
+    existing.dailyAmount += d.categoryBreakdown.find((c) => c.category === 'daily')?.amount || 0;
+    existing.frozenAmount += d.categoryBreakdown.find((c) => c.category === 'frozen')?.amount || 0;
+    existing.drinkAmount += d.categoryBreakdown.find((c) => c.category === 'drink')?.amount || 0;
+    groups.set(key, existing);
+  });
+
+  return Array.from(groups.entries()).map(([date, val]) => ({
+    date,
+    totalAmount: val.totalAmount,
+    orderCount: val.orderCount,
+    snackAmount: val.snackAmount,
+    dailyAmount: val.dailyAmount,
+    frozenAmount: val.frozenAmount,
+    drinkAmount: val.drinkAmount,
+  }));
+};
+
+const aggregateLossByGranularity = (
+  data: typeof mockLossRecords,
+  granularity: GranularityType
+): Record<string, any>[] => {
+  if (granularity === 'daily') {
+    return data.map((r) => ({
+      date: r.date,
+      productName: r.productName,
+      categoryName: r.categoryName,
+      reason: r.reason,
+      quantity: r.quantity,
+      totalCost: r.totalCost,
+    }));
+  }
+
+  const getKey = granularity === 'weekly' ? getWeekKey : getMonthKey;
+  const groups = new Map<string, {
+    totalQuantity: number;
+    totalCost: number;
+    expiredCount: number;
+    damagedCount: number;
+    otherCount: number;
+  }>();
+
+  data.forEach((r) => {
+    const key = getKey(r.date);
+    const existing = groups.get(key) || {
+      totalQuantity: 0,
+      totalCost: 0,
+      expiredCount: 0,
+      damagedCount: 0,
+      otherCount: 0,
+    };
+    existing.totalQuantity += r.quantity;
+    existing.totalCost += r.totalCost;
+    if (r.reason === 'expired') existing.expiredCount++;
+    else if (r.reason === 'damaged') existing.damagedCount++;
+    else existing.otherCount++;
+    groups.set(key, existing);
+  });
+
+  return Array.from(groups.entries()).map(([date, val]) => ({
+    date,
+    totalQuantity: val.totalQuantity,
+    totalCost: val.totalCost,
+    expiredCount: val.expiredCount,
+    damagedCount: val.damagedCount,
+    otherCount: val.otherCount,
+  }));
+};
+
+const filterSalesByDateRange = (
+  data: typeof mockSalesData,
+  dateRange: [dayjs.Dayjs, dayjs.Dayjs]
+): typeof mockSalesData => {
+  return data.filter((d) => {
+    const date = dayjs(d.date);
+    return date.isAfter(dateRange[0].subtract(1, 'day')) && date.isBefore(dateRange[1].add(1, 'day'));
+  });
+};
+
+const filterLossByDateRange = (
+  data: typeof mockLossRecords,
+  dateRange: [dayjs.Dayjs, dayjs.Dayjs]
+): typeof mockLossRecords => {
+  return data.filter((r) => {
+    const date = dayjs(r.date);
+    return date.isAfter(dateRange[0].subtract(1, 'day')) && date.isBefore(dateRange[1].add(1, 'day'));
+  });
+};
+
+const getSalesColumns = (granularity: GranularityType): ColumnsType<Record<string, any>> => {
+  if (granularity === 'daily') {
+    return [
+      { title: '日期', dataIndex: 'date', key: 'date', width: 120, fixed: 'left' },
+      { title: '销售额', dataIndex: 'totalAmount', key: 'totalAmount', width: 100, render: (v: number) => v.toFixed(2) },
+      { title: '订单数', dataIndex: 'orderCount', key: 'orderCount', width: 90 },
+      { title: '零食销售额', dataIndex: 'snackAmount', key: 'snackAmount', width: 110, render: (v: number) => v.toFixed(2) },
+      { title: '日化销售额', dataIndex: 'dailyAmount', key: 'dailyAmount', width: 110, render: (v: number) => v.toFixed(2) },
+      { title: '速冻销售额', dataIndex: 'frozenAmount', key: 'frozenAmount', width: 110, render: (v: number) => v.toFixed(2) },
+      { title: '酒水销售额', dataIndex: 'drinkAmount', key: 'drinkAmount', width: 110, render: (v: number) => v.toFixed(2) },
+    ];
+  }
+  return [
+    { title: granularity === 'weekly' ? '周次' : '月份', dataIndex: 'date', key: 'date', width: 200, fixed: 'left' },
+    { title: '销售额', dataIndex: 'totalAmount', key: 'totalAmount', width: 100, render: (v: number) => v.toFixed(2) },
+    { title: '订单数', dataIndex: 'orderCount', key: 'orderCount', width: 90 },
+    { title: '零食销售额', dataIndex: 'snackAmount', key: 'snackAmount', width: 110, render: (v: number) => v.toFixed(2) },
+    { title: '日化销售额', dataIndex: 'dailyAmount', key: 'dailyAmount', width: 110, render: (v: number) => v.toFixed(2) },
+    { title: '速冻销售额', dataIndex: 'frozenAmount', key: 'frozenAmount', width: 110, render: (v: number) => v.toFixed(2) },
+    { title: '酒水销售额', dataIndex: 'drinkAmount', key: 'drinkAmount', width: 110, render: (v: number) => v.toFixed(2) },
+  ];
+};
+
+const getLossColumns = (granularity: GranularityType): ColumnsType<Record<string, any>> => {
+  if (granularity === 'daily') {
+    return [
+      { title: '日期', dataIndex: 'date', key: 'date', width: 120, fixed: 'left' },
+      { title: '商品名称', dataIndex: 'productName', key: 'productName', width: 150 },
+      { title: '品类', dataIndex: 'categoryName', key: 'categoryName', width: 80 },
+      {
+        title: '损耗原因',
+        dataIndex: 'reason',
+        key: 'reason',
+        width: 100,
+        render: (v: string) => (v === 'expired' ? '临期过期' : v === 'damaged' ? '破损' : '其他'),
+      },
+      { title: '数量', dataIndex: 'quantity', key: 'quantity', width: 80 },
+      { title: '损耗金额', dataIndex: 'totalCost', key: 'totalCost', width: 100, render: (v: number) => v.toFixed(2) },
+    ];
+  }
+  return [
+    { title: granularity === 'weekly' ? '周次' : '月份', dataIndex: 'date', key: 'date', width: 200, fixed: 'left' },
+    { title: '损耗总数量', dataIndex: 'totalQuantity', key: 'totalQuantity', width: 110 },
+    { title: '损耗总金额', dataIndex: 'totalCost', key: 'totalCost', width: 110, render: (v: number) => v.toFixed(2) },
+    { title: '临期过期次数', dataIndex: 'expiredCount', key: 'expiredCount', width: 110 },
+    { title: '破损次数', dataIndex: 'damagedCount', key: 'damagedCount', width: 90 },
+    { title: '其他原因次数', dataIndex: 'otherCount', key: 'otherCount', width: 110 },
+  ];
+};
+
+const inventoryColumns: ColumnsType<Record<string, any>> = [
+  { title: '商品编号', dataIndex: 'id', key: 'id', width: 100, fixed: 'left' },
+  { title: '商品名称', dataIndex: 'name', key: 'name', width: 180 },
+  { title: '品类', dataIndex: 'categoryName', key: 'categoryName', width: 80 },
+  { title: '售价', dataIndex: 'price', key: 'price', width: 80, render: (v: number) => v.toFixed(2) },
+  { title: '成本', dataIndex: 'cost', key: 'cost', width: 80, render: (v: number) => v.toFixed(2) },
+  { title: '当前库存', dataIndex: 'stock', key: 'stock', width: 90 },
+  { title: '到期日期', dataIndex: 'expireDate', key: 'expireDate', width: 110 },
+  { title: '近30天销量', dataIndex: 'salesLast30Days', key: 'salesLast30Days', width: 100 },
+  { title: '周转天数', dataIndex: 'turnoverDays', key: 'turnoverDays', width: 90 },
+];
+
+const alertColumns: ColumnsType<Record<string, any>> = [
+  { title: '商品编号', dataIndex: 'productId', key: 'productId', width: 100, fixed: 'left' },
+  { title: '商品名称', dataIndex: 'productName', key: 'productName', width: 180 },
+  { title: '预警类型', dataIndex: 'type', key: 'type', width: 100, render: (v: string) => (v === 'expiring' ? '临期' : v === 'slow_moving' ? '滞销' : '缺货') },
+  { title: '预警级别', dataIndex: 'level', key: 'level', width: 90 },
+  { title: '当前库存', dataIndex: 'stock', key: 'stock', width: 90 },
+  { title: '库存价值', dataIndex: 'stockValue', key: 'stockValue', width: 100, render: (v: number) => v.toFixed(2) },
+];
+
+const analysisColumns: ColumnsType<Record<string, any>> = [
+  { title: '商品名称', dataIndex: 'productName', key: 'productName', width: 180, fixed: 'left' },
+  { title: '品类', dataIndex: 'categoryName', key: 'categoryName', width: 80 },
+  { title: '销售额', dataIndex: 'revenue', key: 'revenue', width: 100, render: (v: number) => v.toFixed(2) },
+  { title: '成本', dataIndex: 'cost', key: 'cost', width: 100, render: (v: number) => v.toFixed(2) },
+  { title: '利润', dataIndex: 'profit', key: 'profit', width: 100, render: (v: number) => v.toFixed(2) },
+  { title: '毛利率', dataIndex: 'marginRate', key: 'marginRate', width: 90, render: (v: number) => v.toFixed(1) + '%' },
+  { title: '工作日销量', dataIndex: 'weekdaySales', key: 'weekdaySales', width: 100 },
+  { title: '周末销量', dataIndex: 'weekendSales', key: 'weekendSales', width: 90 },
+];
+
+const generateReportSheets = (
+  reportType: ReportType,
+  dateRange: [dayjs.Dayjs, dayjs.Dayjs],
+  granularity: GranularityType
+): ReportSheet[] => {
+  const sheets: ReportSheet[] = [];
+
+  if (reportType === 'sales' || reportType === 'analysis') {
+    const filteredSales = filterSalesByDateRange(mockSalesData, dateRange);
+    const aggregatedSales = aggregateSalesByGranularity(filteredSales, granularity);
+    sheets.push({
+      name: '销售明细',
+      columns: getSalesColumns(granularity),
+      data: aggregatedSales.map((item, i) => ({ ...item, _key: `sales-${i}` })),
+    });
+  }
+
+  if (reportType === 'inventory' || reportType === 'analysis') {
+    sheets.push({
+      name: '库存明细',
+      columns: inventoryColumns,
+      data: mockProducts.slice(0, 50).map((p, i) => ({ ...p, _key: `inv-${i}` })),
+    });
+
+    sheets.push({
+      name: '库存预警',
+      columns: alertColumns,
+      data: mockInventoryAlerts.map((a, i) => ({ ...a, _key: `alert-${i}` })),
+    });
+  }
+
+  if (reportType === 'loss' || reportType === 'analysis') {
+    const filteredLoss = filterLossByDateRange(mockLossRecords, dateRange);
+    const aggregatedLoss = aggregateLossByGranularity(filteredLoss, granularity);
+    sheets.push({
+      name: '损耗明细',
+      columns: getLossColumns(granularity),
+      data: aggregatedLoss.map((item, i) => ({ ...item, _key: `loss-${i}` })),
+    });
+  }
+
+  if (reportType === 'analysis') {
+    sheets.push({
+      name: '单品分析',
+      columns: analysisColumns,
+      data: mockProductAnalysis.map((p, i) => ({ ...p, _key: `analysis-${i}` })),
+    });
+  }
+
+  return sheets;
+};
+
+const hasAnyData = (sheets: ReportSheet[]): boolean => {
+  return sheets.some((s) => s.data.length > 0);
+};
 
 export default function Reports() {
   const [reportType, setReportType] = useState<ReportType>('sales');
@@ -30,8 +315,10 @@ export default function Reports() {
     dayjs().subtract(30, 'day'),
     dayjs(),
   ]);
+  const [granularity, setGranularity] = useState<GranularityType>('daily');
   const [isGenerating, setIsGenerating] = useState(false);
   const [exportProgress, setExportProgress] = useState(0);
+  const [previewVisible, setPreviewVisible] = useState(false);
 
   const reportTemplates = [
     {
@@ -71,88 +358,67 @@ export default function Reports() {
     purple: 'from-purple-500 to-purple-600',
   };
 
+  const sheets = useMemo(
+    () => generateReportSheets(reportType, dateRange, granularity),
+    [reportType, dateRange, granularity]
+  );
+
+  const hasData = useMemo(() => hasAnyData(sheets), [sheets]);
+
+  const handlePreview = () => {
+    setPreviewVisible(true);
+  };
+
   const handleExport = async () => {
+    if (!hasData) {
+      message.warning('当前配置下无数据可导出，请调整时间范围后重试');
+      return;
+    }
+
     setIsGenerating(true);
     setExportProgress(0);
 
     const wb = XLSX.utils.book_new();
 
-    for (let i = 0; i <= 100; i += 20) {
-      await new Promise((resolve) => setTimeout(resolve, 200));
+    for (let i = 0; i <= 80; i += 20) {
+      await new Promise((resolve) => setTimeout(resolve, 150));
       setExportProgress(i);
     }
 
-    if (reportType === 'sales' || reportType === 'analysis') {
-      const salesExport = mockSalesData.map((d) => ({
-        日期: d.date,
-        销售额: d.totalAmount.toFixed(2),
-        订单数: d.orderCount,
-        零食销售额: d.categoryBreakdown.find((c) => c.category === 'snack')?.amount || 0,
-        日化销售额: d.categoryBreakdown.find((c) => c.category === 'daily')?.amount || 0,
-        速冻销售额: d.categoryBreakdown.find((c) => c.category === 'frozen')?.amount || 0,
-        酒水销售额: d.categoryBreakdown.find((c) => c.category === 'drink')?.amount || 0,
-      }));
-      const ws1 = XLSX.utils.json_to_sheet(salesExport);
-      XLSX.utils.book_append_sheet(wb, ws1, '销售明细');
-    }
+    sheets.forEach((sheet) => {
+      const exportData = sheet.data.map((row) => {
+        const exportRow: Record<string, any> = {};
+        sheet.columns.forEach((col: any) => {
+          const key = col.dataIndex;
+          const title = col.title;
+          let value = row[key];
+          if (col.render && typeof value === 'number') {
+            if (key === 'marginRate') {
+              value = value.toFixed(1) + '%';
+            } else if (['totalAmount', 'snackAmount', 'dailyAmount', 'frozenAmount', 'drinkAmount', 'totalCost', 'price', 'cost', 'stockValue', 'revenue', 'profit'].includes(key)) {
+              value = value.toFixed(2);
+            }
+          }
+          if (key === 'type') {
+            value = value === 'expiring' ? '临期' : value === 'slow_moving' ? '滞销' : '缺货';
+          }
+          if (key === 'reason') {
+            value = value === 'expired' ? '临期过期' : value === 'damaged' ? '破损' : '其他';
+          }
+          exportRow[title] = value;
+        });
+        return exportRow;
+      });
 
-    if (reportType === 'inventory' || reportType === 'analysis') {
-      const inventoryExport = mockProducts.slice(0, 50).map((p) => ({
-        商品编号: p.id,
-        商品名称: p.name,
-        品类: p.categoryName,
-        售价: p.price.toFixed(2),
-        成本: p.cost.toFixed(2),
-        当前库存: p.stock,
-        到期日期: p.expireDate,
-        近30天销量: p.salesLast30Days,
-        周转天数: p.turnoverDays,
-      }));
-      const ws2 = XLSX.utils.json_to_sheet(inventoryExport);
-      XLSX.utils.book_append_sheet(wb, ws2, '库存明细');
-
-      const alertExport = mockInventoryAlerts.map((a) => ({
-        商品编号: a.productId,
-        商品名称: a.productName,
-        预警类型: a.type === 'expiring' ? '临期' : a.type === 'slow_moving' ? '滞销' : '缺货',
-        预警级别: a.level,
-        当前库存: a.stock,
-        库存价值: a.stockValue.toFixed(2),
-      }));
-      const ws3 = XLSX.utils.json_to_sheet(alertExport);
-      XLSX.utils.book_append_sheet(wb, ws3, '库存预警');
-    }
-
-    if (reportType === 'loss' || reportType === 'analysis') {
-      const lossExport = mockLossRecords.map((r) => ({
-        日期: r.date,
-        商品名称: r.productName,
-        品类: r.categoryName,
-        损耗原因: r.reason === 'expired' ? '临期过期' : r.reason === 'damaged' ? '破损' : '其他',
-        数量: r.quantity,
-        损耗金额: r.totalCost.toFixed(2),
-      }));
-      const ws4 = XLSX.utils.json_to_sheet(lossExport);
-      XLSX.utils.book_append_sheet(wb, ws4, '损耗明细');
-    }
-
-    if (reportType === 'analysis') {
-      const analysisExport = mockProductAnalysis.map((p) => ({
-        商品名称: p.productName,
-        品类: p.categoryName,
-        销售额: p.revenue.toFixed(2),
-        成本: p.cost.toFixed(2),
-        利润: p.profit.toFixed(2),
-        毛利率: p.marginRate.toFixed(1) + '%',
-        工作日销量: p.weekdaySales,
-        周末销量: p.weekendSales,
-      }));
-      const ws5 = XLSX.utils.json_to_sheet(analysisExport);
-      XLSX.utils.book_append_sheet(wb, ws5, '单品分析');
-    }
+      const ws = XLSX.utils.json_to_sheet(exportData);
+      XLSX.utils.book_append_sheet(wb, ws, sheet.name);
+    });
 
     setExportProgress(100);
-    XLSX.writeFile(wb, `超市${reportType === 'sales' ? '销售' : reportType === 'inventory' ? '库存' : reportType === 'loss' ? '损耗' : '综合分析'}报表_${dayjs().format('YYYYMMDD')}.xlsx`);
+    XLSX.writeFile(
+      wb,
+      `超市${reportType === 'sales' ? '销售' : reportType === 'inventory' ? '库存' : reportType === 'loss' ? '损耗' : '综合分析'}报表_${dayjs().format('YYYYMMDD')}.xlsx`
+    );
 
     setTimeout(() => {
       setIsGenerating(false);
@@ -191,6 +457,47 @@ export default function Reports() {
       size: '3.2 MB',
     },
   ];
+
+  const renderPreviewContent = () => {
+    if (!hasData) {
+      return (
+        <div className="py-16">
+          <Empty description="该时间范围无数据" />
+        </div>
+      );
+    }
+
+    if (sheets.length === 1) {
+      const sheet = sheets[0];
+      return (
+        <Table
+          columns={sheet.columns}
+          dataSource={sheet.data}
+          rowKey="_key"
+          scroll={{ x: 1000 }}
+          pagination={{ pageSize: 10 }}
+          size="small"
+        />
+      );
+    }
+
+    const tabItems = sheets.map((sheet, index) => ({
+      key: String(index),
+      label: sheet.name,
+      children: (
+        <Table
+          columns={sheet.columns}
+          dataSource={sheet.data}
+          rowKey="_key"
+          scroll={{ x: 1000 }}
+          pagination={{ pageSize: 10 }}
+          size="small"
+        />
+      ),
+    }));
+
+    return <Tabs items={tabItems} />;
+  };
 
   return (
     <div className="space-y-6">
@@ -241,9 +548,7 @@ export default function Reports() {
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              报表格式
-            </label>
+            <label className="block text-sm font-medium text-gray-700 mb-2">报表格式</label>
             <Select defaultValue="xlsx" style={{ width: '100%' }} size="large">
               <Option value="xlsx">Excel (.xlsx)</Option>
               <Option value="csv">CSV (.csv)</Option>
@@ -252,10 +557,13 @@ export default function Reports() {
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              数据粒度
-            </label>
-            <Select defaultValue="daily" style={{ width: '100%' }} size="large">
+            <label className="block text-sm font-medium text-gray-700 mb-2">数据粒度</label>
+            <Select
+              value={granularity}
+              onChange={(val) => setGranularity(val)}
+              style={{ width: '100%' }}
+              size="large"
+            >
               <Option value="daily">每日明细</Option>
               <Option value="weekly">每周汇总</Option>
               <Option value="monthly">每月汇总</Option>
@@ -284,11 +592,42 @@ export default function Reports() {
           >
             导出报表
           </Button>
-          <Button size="large" className="h-11 px-6">
+          <Button
+            size="large"
+            icon={<Eye size={18} />}
+            onClick={handlePreview}
+            className="h-11 px-6"
+          >
             预览报表
           </Button>
         </div>
       </div>
+
+      <Modal
+        title="报表预览"
+        open={previewVisible}
+        onCancel={() => setPreviewVisible(false)}
+        footer={[
+          <Button key="close" onClick={() => setPreviewVisible(false)}>
+            关闭
+          </Button>,
+          <Button
+            key="export"
+            type="primary"
+            icon={<Download size={16} />}
+            onClick={() => {
+              setPreviewVisible(false);
+              handleExport();
+            }}
+          >
+            导出Excel
+          </Button>,
+        ]}
+        width={1000}
+        styles={{ body: { maxHeight: '70vh', overflow: 'auto' } }}
+      >
+        {renderPreviewContent()}
+      </Modal>
 
       <div className="stat-card">
         <h3 className="font-semibold text-gray-800 mb-6">往年同期对比</h3>
