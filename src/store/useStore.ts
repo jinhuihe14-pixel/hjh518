@@ -14,6 +14,7 @@ import {
   HourlySales,
   KpiData,
   SalesData,
+  BatchDeductionItem,
 } from '@/types';
 import { generateProducts } from '@/data/mockData';
 
@@ -293,54 +294,47 @@ export const useStore = create<Store>()(
 
       sellStock: ({ items }) => {
         const state = get();
-        const batchMap = new Map<string, InventoryBatch[]>();
 
-        state.batches.forEach((b) => {
-          if (!batchMap.has(b.productId)) batchMap.set(b.productId, []);
-          batchMap.get(b.productId)!.push(b);
-        });
+        const deductionPlans = [];
+        for (const item of items) {
+          const product = state.products.find((p) => p.id === item.productId);
+          if (!product) return { success: false, message: `商品不存在` };
+
+          const plan = calculateFifoDeduction(item.productId, item.quantity, state.batches);
+          if (!plan.success) {
+            return {
+              success: false,
+              message: `商品「${product.name}」${plan.message}`,
+            };
+          }
+          deductionPlans.push({ item, product, plan });
+        }
+
+        const newBatches = state.batches.map((b) => ({ ...b }));
+        const batchMap = new Map<string, InventoryBatch>();
+        newBatches.forEach((b) => batchMap.set(b.id, b));
 
         const salesItems: SalesItem[] = [];
         let totalAmount = 0;
         let totalCost = 0;
         let totalProfit = 0;
 
-        for (const item of items) {
-          const product = state.products.find((p) => p.id === item.productId);
-          if (!product) return { success: false, message: `商品不存在` };
-
-          const productBatches = (batchMap.get(item.productId) || [])
-            .filter((b) => b.remaining > 0)
-            .sort((a, b) => a.expireDate.localeCompare(b.expireDate));
-
-          const totalStock = productBatches.reduce((sum, b) => sum + b.remaining, 0);
-          if (totalStock < item.quantity) {
-            return {
-              success: false,
-              message: `商品「${product.name}」库存不足，当前库存 ${totalStock} 件`,
-            };
-          }
-
-          let remainingQty = item.quantity;
-          let costTotal = 0;
-          const usedBatchIds: string[] = [];
-
-          for (const batch of productBatches) {
-            if (remainingQty <= 0) break;
-            const take = Math.min(remainingQty, batch.remaining);
-            batch.remaining -= take;
-            remainingQty -= take;
-            costTotal += take * batch.unitCost;
-            usedBatchIds.push(batch.id);
+        for (const { item, product, plan } of deductionPlans) {
+          for (const ded of plan.deductions) {
+            const batch = batchMap.get(ded.batchId);
+            if (batch) {
+              batch.remaining -= ded.quantity;
+            }
           }
 
           const actualQty = item.quantity;
+          const costTotal = plan.totalCost;
           const avgCost = costTotal / actualQty;
           const subtotal = actualQty * item.unitPrice;
           const profit = subtotal - costTotal;
 
           salesItems.push({
-            batchId: usedBatchIds[0],
+            batchId: plan.deductions[0]?.batchId || '',
             productId: item.productId,
             productName: product.name,
             category: product.category,
@@ -371,7 +365,7 @@ export const useStore = create<Store>()(
         };
 
         set({
-          batches: [...state.batches],
+          batches: newBatches,
           salesRecords: [...state.salesRecords, newRecord],
           nextSaleId: state.nextSaleId + 1,
         });
@@ -449,6 +443,59 @@ export const useStore = create<Store>()(
     }
   )
 );
+
+export function calculateFifoDeduction(
+  productId: string,
+  quantity: number,
+  batches: InventoryBatch[]
+): {
+  success: boolean;
+  message?: string;
+  deductions: BatchDeductionItem[];
+  totalCost: number;
+  totalQty: number;
+} {
+  const productBatches = batches
+    .filter((b) => b.productId === productId && b.remaining > 0)
+    .sort((a, b) => a.expireDate.localeCompare(b.expireDate));
+
+  const totalStock = productBatches.reduce((sum, b) => sum + b.remaining, 0);
+  if (totalStock < quantity) {
+    return {
+      success: false,
+      message: `库存不足，当前库存 ${totalStock} 件`,
+      deductions: [],
+      totalCost: 0,
+      totalQty: 0,
+    };
+  }
+
+  const deductions: BatchDeductionItem[] = [];
+  let remainingQty = quantity;
+  let totalCost = 0;
+
+  for (const batch of productBatches) {
+    if (remainingQty <= 0) break;
+    const take = Math.min(remainingQty, batch.remaining);
+    const costTotal = take * batch.unitCost;
+    deductions.push({
+      batchId: batch.id,
+      expireDate: batch.expireDate,
+      unitCost: batch.unitCost,
+      quantity: take,
+      costTotal,
+    });
+    remainingQty -= take;
+    totalCost += costTotal;
+  }
+
+  return {
+    success: true,
+    deductions,
+    totalCost: parseFloat(totalCost.toFixed(2)),
+    totalQty: quantity - remainingQty,
+  };
+}
 
 export function getProductStock(productId: string, batches: InventoryBatch[]): number {
   return batches

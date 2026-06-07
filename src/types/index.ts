@@ -42,6 +42,14 @@ export interface InventoryBatch {
   inboundDate: string;
 }
 
+export interface BatchDeductionItem {
+  batchId: string;
+  expireDate: string;
+  unitCost: number;
+  quantity: number;
+  costTotal: number;
+}
+
 export interface SalesItem {
   batchId: string;
   productId: string;
